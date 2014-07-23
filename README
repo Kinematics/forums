@@ -1,0 +1,15 @@
+This is a set of scripts for interacting with Web forums. The aim is to be
+easily extensible and allow for using a similar API for any forum desired.
+
+forum_archive is the library, which currently supports fetching threads from
+implemented forums into a common data format. Metadata and post text are
+extracted.
+
+thread_story is a standalone program for compiling ebook files of stories
+published as a series of separate posts. To run it, pass it the URL of a post
+containing a table of contents, and a title. It will fetch and rectify the
+contents, then allow you to edit them. After editing the contents as necessary,
+quit the editor; the script will download all the chapters and compile them into
+a single .html file. The format of the resulting file is such that Calibre will
+successfully detect its structure for conversion, though the title and author
+must still be set manually.
