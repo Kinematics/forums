@@ -13,3 +13,12 @@ quit the editor; the script will download all the chapters and compile them into
 a single .html file. The format of the resulting file is such that Calibre will
 successfully detect its structure for conversion, though the title and author
 must still be set manually.
+
+The scripts depend on, at least:
+ - html2text
+ - markdown
+ - dateutil
+ - BeautifulSoup version 4
+ - html5lib
+
+The easiest way to install these is with pip or easy_install.
