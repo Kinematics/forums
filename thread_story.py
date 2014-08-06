@@ -4,7 +4,7 @@
 # manually compiled list of story chapters to create a single story ebook file.
 
 import forum_archive, html2text, urllib.request, markdown
-import argparse, tempfile, os, subprocess, re, sys
+import argparse, tempfile, os, subprocess, re, sys, urllib.parse
 from bs4 import BeautifulSoup
 
 def get_redirect(url):
@@ -105,7 +105,7 @@ body {{ font-family: sans-serif }}
     outfile.write("</body>\n</html>\n")
 
 
-def make_listing(html):
+def make_listing(html, url):
     """Takes some HTML with links in it, returns a list of (title, url) tuples
     suitable to pass to compile_story. Designed for extracting from
     table-of-contents pages. Calls get_redirect on all URLs, for the purpose of
@@ -117,7 +117,12 @@ def make_listing(html):
     l = len(it)
     for n, i in enumerate(it):
         print("{}/{}".format(n+1, l), end='\r')
-        yield (i.string, get_redirect(i['href']))
+        pr = urllib.parse.urlparse(i['href'])
+        if not pr.netloc:
+            u = urllib.parse.urljoin(url, ('' if pr.path.startswith('/') else '/') + pr.path + ('#' + pr.fragment if pr.fragment else ''))
+        else:
+            u = i['href']
+        yield (i.string, get_redirect(u))
     print("\n", end="")
 
 def make_filename(title):
@@ -143,9 +148,11 @@ def read_file(fn):
 
 def main():
     ap = argparse.ArgumentParser(description="Forum-based story downloader/compiler")
-    ap.add_argument("-u", "--update", help="Update an existing story", action="store_true", default=False)
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("-u", "--update", help="Update an existing story", action="store_true", default=False)
+    ap.add_argument("-a", "--author", help="Override author name", default=None)
     ap.add_argument("url", help="Post URL to contents page")
-    ap.add_argument("title", help="Story title in file", default=None, nargs='?')
+    g.add_argument("title", help="Story title in file", default=None, nargs='?')
     args = ap.parse_args()
     if args.update and args.title:
         print("Error: may not provide title when updating", file=sys.stderr)
@@ -159,7 +166,7 @@ def main():
     fp = g.get_thread(g.get_url_page(args.url))
     cl = [i for i in fp if i['post_url'] == args.url][0]
     author = cl['poster_name']
-    l = list(make_listing(cl['text']))
+    l = list(make_listing(cl['text'], args.url))
 
     ede = os.environ.get('EDITOR', 'vim')
     helpstr = """Above the marker is the table of contents from the original file; below is
