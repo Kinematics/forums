@@ -6,20 +6,28 @@
 # of posts; a post is a dictionary providing HTML text, name of poster, date,
 # and other metadata as appropriate.
 
+# This code has recently undergone a major rewrite in conjunction with the
+# thread_story script. The only thread modules which can be assumed to hold full
+# functionality along with that script are XFGetter and QQGetter.
+
 import re, urllib.request, urllib.error, urllib.parse, sys, datetime, http.client
 from bs4 import BeautifulSoup
 import bs4
 import dateutil.parser, datetime, math, time
-import traceback
+import traceback, http.cookiejar, hashlib
 import json, gzip
 
-def urlopen_retry(url, tries=3, delay=1):
+def urlopen_retry(url, tries=3, delay=1, opener=None):
     """Open a URL, with retries on failure. Spoofs user agent to look like Firefox,
     due to various sites attempting to prohibit automatic downloading."""
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Ubuntu; Linux i686; rv:21.0) Gecko/20100101 Firefox/21.0"})
+    if opener is None:
+        ofunc = urllib.request.urlopen
+    else:
+        ofunc = opener.open
     for i in range(tries):
         try:
-            r = urllib.request.urlopen(req)
+            r = ofunc(req)
         except urllib.error.URLError as e:
             if i == tries - 1:
                 raise e
@@ -32,38 +40,32 @@ class ThreadGetter:
     forum implemented."""
     def __init__(self, url):
         self.url = url
+        self.opener = None
     def get_thread(self, pages=None):
         """This method will download the thread (of the appropriate forum) which was
         passed to the object's constructor. URLs are not checked for
         correctness; unpredictable errors will occur on one which is not as
         expected. The parameter 'pages' controls which pages of the thread are
-        downloaded; as a single number, it will download only that page, while
-        as a tuple (x,y) it will download pages from x to y, inclusive. Pages
-        are indexed from 1.
+        downloaded. If this is not iterable, it refers to a single page; if it
+        is, it is construed as a list of pages to download. Each value can be
+        either an integer, referring to a 1-indexed page number as the Web site
+        provides, or an opaque string (page component) which will download the
+        correct page when plugged into a URL.
 
         """
-        r = urlopen_retry(self.url)
+        r = urlopen_retry(self.url, opener=self.opener)
         html = r.read()
         soup = BeautifulSoup(html)
         npages = self.get_npages(soup)
         print("{} pages".format(npages))
         thread = []
         if pages is None:
-            it = range(1, npages+1)
-        else:
-            try:
-                x, y = pages
-                if x < 1: x = 1
-                if y > npages: y = npages
-                it = range(x, y+1)
-            except TypeError:
-                x = pages
-                if x < 1 or x > npages: 
-                    raise ValueError("Single value out of thread bounds")
-                it = range(x, x+1)
-        for i in it:
+            pages = range(1, npages+1)
+        if type(pages) not in [list, tuple]:
+            pages = [pages]
+        for i in pages:
             purl = self.make_page_url(i)
-            r = urlopen_retry(purl)
+            r = urlopen_retry(purl, opener=self.opener)
             html = r.read()
             soup = BeautifulSoup(html)
             thread = thread + self.get_posts(soup, purl)
@@ -97,8 +99,11 @@ class ThreadGetter:
         static rendering."""
         return text
     def get_url_page(self, url):
-        """This method takes a URL pointing to a thread page and returns the number of
-        the page."""
+        """This method takes a URL pointing to a thread page and returns the page number
+        or page component. This is guaranteed to be valid when passed to
+        get_thread, and to refer to the thread 
+
+        """
         
 class FFNGetter(ThreadGetter):
     fid = tid = None
@@ -162,11 +167,12 @@ class XFGetter(ThreadGetter):
     URL.
 
     """
-    tid = None
     def __init__(self, url):
         ThreadGetter.__init__(self, url)
         o = re.match("(https?://)?([^/]+)/", url)
         self.domain = o.group(2)
+        o = re.match(r"http://[^/]+/threads/[^.]+\.(\d+).*", self.url)
+        self.tid = o.group(1)
     def get_posts(self, soup, url):
         rv = []
         for i in soup.find_all("li", class_="message"):
@@ -195,10 +201,9 @@ class XFGetter(ThreadGetter):
         npages = int(o.group(1))
         return npages
     def make_page_url(self, page):
-        if self.tid == None:
-            o = re.match(r"http://[^/]+/threads/[^.]+\.(\d+).*", self.url)
-            self.tid = o.group(1)
-        return "http://{}/threads/{}/page-{}".format(self.domain, self.tid, page)
+        if type(page) == int:
+            page = "page-{}".format(page)
+        return "http://{}/threads/{}/{}".format(self.domain, self.tid, page)
     def get_url_page(self, url=None):
         if url is None:
             url = self.url
@@ -212,6 +217,67 @@ class XFGetter(ThreadGetter):
         soup = BeautifulSoup(text)
         soup.blockquote.name = 'div'
         return str(soup)
+
+class QQGetter(ThreadGetter):
+    def __init__(self, url):
+        ThreadGetter.__init__(self, url)
+        o = re.match(r"(https?://)?questionablequesting.com/index.php\?topic=(?P<tid>\d+)(\.(?P<pc>[^#]+))?(#.+)?", self.url)
+        self.__dict__.update(o.groupdict())
+        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    def login(self, username, password):
+        d = self.opener.open('http://questionablequesting.com/index.php?action=login').read()
+        s = BeautifulSoup(d)
+        sid = re.search(r"'([^']+)'", s.find('form', id='frmLogin')['onsubmit']).group(1)
+        hs1 = username.lower() + password
+        hs2 = hashlib.sha1(hs1.encode()).hexdigest() + sid
+        hs3 = hashlib.sha1(hs2.encode()).hexdigest()
+        d = self.opener.open('http://questionablequesting.com/index.php?action=login2', 
+                           data='user={}&passwrd=&cookieneverexp=on&hash_passwrd={}'.format(username, hs3).encode()).read()
+        return d
+    def handle_url(self, url):
+        """This function removes QQ's PHPSESSID component from URLs, which it only
+        inserts if viewing without cookies.
+
+        """
+        r = urllib.parse.urlparse(url)
+        n = urllib.parse.parse_qs(r.query)
+        n.pop('PHPSESSID', None)
+        a = urllib.parse.urlencode(n, doseq=True)
+        return urllib.parse.urlunparse((r[0], r[1], r[2], '', a, r[5]))
+    def get_posts(self, soup, url):
+        vclist = []
+        for i in soup('div', class_="post_wrapper"):
+            el = i.find('h5', id=re.compile("subject_"))
+            pl = self.handle_url(el.a['href'])
+            cpn = re.match(r"subject_(\d+)", el['id']).group(1)
+            text = str(i.find('div', class_='inner', id='msg_{}'.format(cpn)))
+            poe = i.find('div', class_='poster').h4.a
+            poster = poe.string
+            prol = self.handle_url(poe['href'])
+            de = i.find('div', class_='smalltext')
+            date = dateutil.parser.parse(de.strong.next_sibling[1:-2]).isoformat()
+            pe = {'poster_name': poster, 'poster_url': prol, 'text': self.process_html(text), 'orig_text': text, 'post_url': pl, 'date': date}
+            vclist.append(pe)
+        return vclist
+    def get_npages(self, soup):
+        pl = soup.find('div', class_='pagelinks')
+        cpage = int(pl.find('strong').string)
+        try:
+            mpage = int(soup.find_all('a', class_='navPages')[-1].string)
+        except IndexError: # no other pages
+            mpage = 1
+        mpage = mpage if mpage > cpage else cpage
+        return mpage
+    def make_page_url(self, page):
+        if type(page) == int:
+            page = str((page - 1) * 50)
+        return "http://questionablequesting.com/index.php?topic={}.{}".format(self.tid, page)
+    def get_url_page(self, url=None):
+        if url is None:
+            return self.pc
+        o = re.match(r"(https?://)?questionablequesting.com/index.php\?topic=(?P<tid>\d+)(\.(?P<pc>[^#]+))?(#.+)?", self.url)
+        r = o.group('pc')
+        return r
         
 class BLGetter(ThreadGetter):
     tid = None
@@ -266,6 +332,10 @@ class BLGetter(ThreadGetter):
             i.div.decompose()
             i.name = 'blockquote'
         return str(soup)
+    def get_url_page(self, url=None):
+        if url is None:
+            url = self.url
+        
 
 # Incomplete
 class TVTGetter(ThreadGetter):
@@ -277,7 +347,8 @@ class TVTGetter(ThreadGetter):
 
 getters = [ ( re.compile("(https?://)?forums.spacebattles.com/"), XFGetter ),
             ( re.compile("(https?://)?forums.sufficientvelocity.com/"), XFGetter ), 
-            ( re.compile("(https?://)?forums.nrvnqsr.com/"), BLGetter ) ]
+            ( re.compile("(https?://)?forums.nrvnqsr.com/"), BLGetter ),
+            ( re.compile("(https?://)?questionablequesting.com/"), QQGetter ), ]
 
 def make_getter(url):
     """Make a getter for the given URL, parsing the URL to determine which plugin
