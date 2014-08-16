@@ -61,7 +61,7 @@ class ThreadGetter:
         thread = []
         if pages is None:
             pages = range(1, npages+1)
-        if type(pages) not in [list, tuple]:
+        if type(pages) not in [list, tuple, range]:
             pages = [pages]
         for i in pages:
             purl = self.make_page_url(i)

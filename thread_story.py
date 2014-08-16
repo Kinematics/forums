@@ -151,6 +151,7 @@ def main():
     g = ap.add_mutually_exclusive_group()
     g.add_argument("-u", "--update", help="Update an existing story", action="store_true", default=False)
     ap.add_argument("-a", "--author", help="Override author name", default=None)
+    ap.add_argument("-t", "--thread", action="store_true", help="Download archive thread", default=False)
     ap.add_argument("url", help="Post URL to contents page")
     g.add_argument("title", help="Story title in file", default=None, nargs='?')
     args = ap.parse_args()
@@ -163,29 +164,37 @@ def main():
     if args.update:
         args.title, args.url, cli = read_file(args.url)
     g = forum_archive.make_getter(args.url)
-    fp = g.get_thread(g.get_url_page(args.url))
-    cl = [i for i in fp if i['post_url'] == args.url][0]
-    author = cl['poster_name']
-    l = list(make_listing(cl['text'], args.url))
+    if args.thread:
+        fp = g.get_thread()
+        stext = [("Chapter {}".format(i[0]+1), i[1]['text']) for i in enumerate(fp)]
+        l = []
+        author = fp[0]['poster_name']
+    else:
+        fp = g.get_thread(g.get_url_page(args.url))
+        cl = [i for i in fp if i['post_url'] == args.url][0]
+        author = cl['poster_name']
+        l = list(make_listing(cl['text'], args.url))
 
-    ede = os.environ.get('EDITOR', 'vim')
-    helpstr = """Above the marker is the table of contents from the original file; below is
+        ede = os.environ.get('EDITOR', 'vim')
+        helpstr = """Above the marker is the table of contents from the original file; below is 
 that derived from the source. Edit the former as desired, then quit. Everything
 below the marker will be ignored.
 """
-    ifstr = to_string(l) if not args.update else cli + '-' * 20 + "\n" + helpstr + to_string(l)
-    with tempfile.NamedTemporaryFile() as tf:
-        tf.write(ifstr.encode())
-        tf.flush()
-        subprocess.call(ede.split() + [tf.name])
-        tf.seek(0)
-        ofstr = tf.read().decode()
+        ifstr = to_string(l) if not args.update else cli + '-' * 20 + "\n" + helpstr + to_string(l)
+        with tempfile.NamedTemporaryFile() as tf:
+            tf.write(ifstr.encode())
+            tf.flush()
+            subprocess.call(ede.split() + [tf.name])
+            tf.seek(0)
+            ofstr = tf.read().decode()
 
-    if args.update:
-        ofstr = ofstr.split('-'*20)[0]
-    l = to_chapters(ofstr)
-
-    stext = download_story(l)
+        if args.update:
+            ofstr = ofstr.split('-'*20)[0]
+        l = to_chapters(ofstr)
+        stext = download_story(l)
+        
+    if args.author:
+        author = args.author
     fn = make_filename(args.title) + '.html'
     with open(fn, 'w') as of:
         compile_story((args.title, author, args.url), stext, l, of)
