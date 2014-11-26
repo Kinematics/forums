@@ -38,7 +38,7 @@ def urlopen_retry(url, tries=3, delay=1, opener=None):
 class ThreadGetter:
     """This is an abstract class that should be subclassed for each individual
     forum implemented."""
-    def __init__(self, url):
+    def __init__(self, url, *args):
         self.url = url
         self.opener = None
     def get_thread(self, pages=None):
@@ -167,7 +167,7 @@ class XFGetter(ThreadGetter):
     URL.
 
     """
-    def __init__(self, url):
+    def __init__(self, url, *args):
         ThreadGetter.__init__(self, url)
         o = re.match("(https?://)?([^/]+)/", url)
         self.domain = o.group(2)
@@ -218,12 +218,21 @@ class XFGetter(ThreadGetter):
         soup.blockquote.name = 'div'
         return str(soup)
 
+qq_op = None
+
 class QQGetter(ThreadGetter):
-    def __init__(self, url):
+    def __init__(self, url, cred=None, *args):
+        global qq_op
         ThreadGetter.__init__(self, url)
         o = re.match(r"(https?://)?questionablequesting.com/index.php\?topic=(?P<tid>\d+)(\.(?P<pc>[^#]+))?(#.+)?", self.url)
         self.__dict__.update(o.groupdict())
-        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        if qq_op:
+            self.opener = qq_op
+        else:
+            self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+            qq_op = self.opener
+        if cred:
+            self.login(*cred)
     def login(self, username, password):
         d = self.opener.open('http://questionablequesting.com/index.php?action=login').read()
         s = BeautifulSoup(d)
@@ -350,21 +359,20 @@ getters = [ ( re.compile("(https?://)?forums.spacebattles.com/"), XFGetter ),
             ( re.compile("(https?://)?forums.nrvnqsr.com/"), BLGetter ),
             ( re.compile("(https?://)?questionablequesting.com/"), QQGetter ), ]
 
-def make_getter(url):
+def make_getter(url, *args, **kwargs):
     """Make a getter for the given URL, parsing the URL to determine which plugin
     should be used.
 
     """
     for i in getters:
         if i[0].match(url):
-            return i[1](url)
+            return i[1](url, *args, **kwargs)
 
 def store_thread(thread, fname):
     with gzip.GzipFile(fname, 'w') as of:
         of.write(json.dumps(thread).encode())
 
-def save_thread(plist, fname):
-    of = file(fname, "w")
+def save_thread(plist, of):
     html = """<html>
 <head>
 <meta charset="UTF-8">
@@ -382,11 +390,10 @@ td { padding: 5px }
     for l in plist:
         html = '<tr><td><a href="{}">{}</a><br />\n'.format(l['poster_url'], l['poster_name'])
         html += l['text'] + '\n'
-        html += '<small>{}</small>\n</td></tr>\n'.format(l['date'])
+        html += '<small><a href="{}">{}</a></small>\n</td></tr>\n'.format(l['post_url'], l['date'])
         of.write(html)
     html = """</table>
 </body>
 </html>
 """
     of.write(html)
-    of.close()

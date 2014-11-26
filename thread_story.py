@@ -3,7 +3,7 @@
 # This program uses forum_archive to download a story thread, and then a
 # manually compiled list of story chapters to create a single story ebook file.
 
-import forum_archive, html2text, urllib.request, markdown
+import forum_archive, html2text, urllib.request, markdown, urllib.error
 import argparse, tempfile, os, subprocess, re, sys, urllib.parse
 from bs4 import BeautifulSoup
 
@@ -15,7 +15,11 @@ def get_redirect(url):
 
     """
     ro = urllib.request.Request(url, method='HEAD', headers={"User-Agent": "Mozilla/5.0 (X11; Ubuntu; Linux i686; rv:21.0) Gecko/20100101 Firefox/21.0"})
-    r = urllib.request.urlopen(ro)
+    try:
+        r = urllib.request.urlopen(ro)
+    except:
+        print(url)
+        raise
     return r.geturl()
 
 def download_story(chapters):
@@ -25,13 +29,17 @@ def download_story(chapters):
 
     """
     cthread, rlist = [], []
+    lerr = ""
     for i in chapters:
         while True:
             try:
                 n = [j['post_url'] for j in cthread].index(i[1])
                 rlist.append((i[0], cthread[n]['text']))
             except ValueError:
+                if lerr == i[1]:
+                    raise
                 print("Getting thread for URL {}".format(i[1]))
+                lerr = i[1]
                 g = forum_archive.make_getter(i[1])
                 pn = g.get_url_page(i[1])
                 cthread = g.get_thread(pn)
@@ -122,7 +130,10 @@ def make_listing(html, url):
             u = urllib.parse.urljoin(url, ('' if pr.path.startswith('/') else '/') + pr.path + ('#' + pr.fragment if pr.fragment else ''))
         else:
             u = i['href']
-        yield (i.string, get_redirect(u))
+        try:
+            yield (i.string, get_redirect(u))
+        except urllib.error.HTTPError:
+            continue
     print("\n", end="")
 
 def make_filename(title):
@@ -144,6 +155,8 @@ def read_file(fn):
                 chapters += i
             if i.startswith("Chapters:"):
                 cg = True
+    if None in [title, source, chapters]:
+        raise ValueError("Bad file {}".format(fn))
     return title, source, chapters
 
 def main():
@@ -152,6 +165,7 @@ def main():
     g.add_argument("-u", "--update", help="Update an existing story", action="store_true", default=False)
     ap.add_argument("-a", "--author", help="Override author name", default=None)
     ap.add_argument("-t", "--thread", action="store_true", help="Download archive thread", default=False)
+    ap.add_argument("-c", "--credential", help="Log in with credentials", default=None)
     ap.add_argument("url", help="Post URL to contents page")
     g.add_argument("title", help="Story title in file", default=None, nargs='?')
     args = ap.parse_args()
@@ -163,7 +177,11 @@ def main():
         sys.exit(1)
     if args.update:
         args.title, args.url, cli = read_file(args.url)
-    g = forum_archive.make_getter(args.url)
+    if args.credential:
+        c = args.credential.split(':', 1)
+    else:
+        c = None
+    g = forum_archive.make_getter(args.url, c)
     if args.thread:
         fp = g.get_thread()
         stext = [("Chapter {}".format(i[0]+1), i[1]['text']) for i in enumerate(fp)]
@@ -191,6 +209,8 @@ below the marker will be ignored.
         if args.update:
             ofstr = ofstr.split('-'*20)[0]
         l = to_chapters(ofstr)
+        if not l:
+            return
         stext = download_story(l)
         
     if args.author:
