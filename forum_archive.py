@@ -61,7 +61,11 @@ class ThreadGetter:
         thread = []
         if pages is None:
             pages = range(1, npages+1)
-        if type(pages) not in [list, tuple, range]:
+        if type(pages) == tuple:
+            first, last = pages
+            last = last or npages
+            pages = range(first, last+1)
+        if type(pages) not in [list, range]:
             pages = [pages]
         for i in pages:
             purl = self.make_page_url(i)
@@ -167,15 +171,30 @@ class XFGetter(ThreadGetter):
     URL.
 
     """
-    def __init__(self, url, *args):
+    def __init__(self, url, cred={}, *args):
         ThreadGetter.__init__(self, url)
         o = re.match("(https?://)?([^/]+)/", url)
         self.domain = o.group(2)
         o = re.match(r"http://[^/]+/threads/[^.]+\.(\d+).*", self.url)
         self.tid = o.group(1)
+        cj = cred.get('cookies', http.cookiejar.CookieJar())
+        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+        if not 'cookies' in cred and 'username' in cred and 'password' in cred:
+            self.login(**cred)        
+        self.cred = cred
+        self.cred['cookies'] = cj
+    def login(self, username, password, **args):
+        ue = urllib.parse.urlencode
+        self.opener.open('http://{}/login/login'.format(self.domain),
+                         data=ue({'login': username, 'password': password, 'redirect': 'http://{}/'.format(self.domain),
+                                  'register': '0', 'remember': '1', 'cookie_check': '1', '_xfToken': ''}).encode())
+#                         data="login={}&register=0&password={}&remember=1&cookie_check=1&_xfToken=&redirect=http%3A%2F%{}%2F".format(uq(username), uq(password), uq(self.domain)).encode())
     def get_posts(self, soup, url):
         rv = []
         for i in soup.find_all("li", class_="message"):
+            #print(i.prettify())
+            if 'deleted' in i['class']: # only admins/mods can see deleted posts, but if that's the account you're using....
+                continue
             ul = i.find("a", class_="username")
             poster_name = str(ul.string)
             poster_url = "http://{}/{}".format(self.domain, ul['href'])
@@ -196,9 +215,12 @@ class XFGetter(ThreadGetter):
             rv.append({'poster_name': poster_name, 'poster_url': poster_url, 'text': self.process_html(text), 'orig_text': text, 'post_url': post_url, 'date': date})
         return rv
     def get_npages(self, soup):
-        pages = soup.find("span", class_="pageNavHeader")
-        o = re.match(r"Page \d+ of (\d+)", pages.string)
-        npages = int(o.group(1))
+        try:
+            pages = soup.find("span", class_="pageNavHeader")
+            o = re.match(r"Page \d+ of (\d+)", pages.string)
+            npages = int(o.group(1))
+        except AttributeError:
+            npages = 1
         return npages
     def make_page_url(self, page):
         if type(page) == int:
@@ -215,25 +237,45 @@ class XFGetter(ThreadGetter):
             return int(r)
     def process_html(self, text):
         soup = BeautifulSoup(text)
+        del soup.blockquote['class']
         soup.blockquote.name = 'div'
-        return str(soup)
-
-qq_op = None
+        for i in soup(text=True):
+            #print(repr(i))
+            try:
+                if i.isspace():
+                    #print("Deleted")
+                    i.extract()
+                i.replace_with(i.strip("\n\t"))
+            except:
+                pass
+        for i in soup('div', class_="bbCodeQuote"):
+            try:
+                auth = i['data-author']
+            except KeyError:
+                auth = None
+            ne = i.aside.blockquote.div
+            ne = ne.extract()
+            ne.name = 'blockquote'
+            del ne['class']
+            if auth:
+                ne['author'] = auth
+            i.replace_with(ne)
+        soup.find('div', class_="messageTextEndMarker").decompose()
+        rv = str(soup)
+        return rv[30:-20] # cuts out the superfluous wrapper elements BS4 wants to include
 
 class QQGetter(ThreadGetter):
-    def __init__(self, url, cred=None, *args):
-        global qq_op
+    def __init__(self, url, cred={}, *args):
         ThreadGetter.__init__(self, url)
         o = re.match(r"(https?://)?questionablequesting.com/index.php\?topic=(?P<tid>\d+)(\.(?P<pc>[^#]+))?(#.+)?", self.url)
         self.__dict__.update(o.groupdict())
-        if qq_op:
-            self.opener = qq_op
-        else:
-            self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-            qq_op = self.opener
-        if cred:
-            self.login(*cred)
-    def login(self, username, password):
+        cj = cred.get('cookies', http.cookiejar.CookieJar())
+        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+        if not 'cookies' in cred:
+            self.login(**cred)        
+        self.cred = cred
+        self.cred['cookies'] = cj
+    def login(self, username, password, **args):
         d = self.opener.open('http://questionablequesting.com/index.php?action=login').read()
         s = BeautifulSoup(d)
         sid = re.search(r"'([^']+)'", s.find('form', id='frmLogin')['onsubmit']).group(1)
@@ -357,7 +399,7 @@ class TVTGetter(ThreadGetter):
 getters = [ ( re.compile("(https?://)?forums.spacebattles.com/"), XFGetter ),
             ( re.compile("(https?://)?forums.sufficientvelocity.com/"), XFGetter ), 
             ( re.compile("(https?://)?forums.nrvnqsr.com/"), BLGetter ),
-            ( re.compile("(https?://)?questionablequesting.com/"), QQGetter ), ]
+            ( re.compile("(https?://)?forum.questionablequesting.com/"), XFGetter ), ]
 
 def make_getter(url, *args, **kwargs):
     """Make a getter for the given URL, parsing the URL to determine which plugin
@@ -367,6 +409,7 @@ def make_getter(url, *args, **kwargs):
     for i in getters:
         if i[0].match(url):
             return i[1](url, *args, **kwargs)
+    raise ValueError("URL {} didn't match any patterns".format(url))
 
 def store_thread(thread, fname):
     with gzip.GzipFile(fname, 'w') as of:
