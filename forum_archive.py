@@ -292,7 +292,6 @@ class XFGetter(ThreadGetter):
             if auth:
                 ne['author'] = auth
             i.replace_with(ne)
-        soup.find('div', class_="messageTextEndMarker").decompose()
         rv = str(soup)
         return rv[30:-20] # cuts out the superfluous wrapper elements BS4 wants to include
 
