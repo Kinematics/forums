@@ -96,7 +96,7 @@ class ThreadGetter:
             html = r.read()
             soup = BeautifulSoup(html)
             thread = thread + self.get_posts(soup, purl)
-            sys.stdout.write("Got page {} of {}\r".format(i, npages))
+            sys.stdout.write("Got page {} of {}\n".format(i, npages))
         sys.stdout.write('\n')
         return thread
     def get_posts(self, soup, url):
