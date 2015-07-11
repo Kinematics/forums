@@ -7,20 +7,15 @@ import forum_archive, html2text, urllib.request, markdown, urllib.error
 import argparse, tempfile, os, subprocess, re, sys, urllib.parse
 from bs4 import BeautifulSoup
 
-def get_redirect(url):
-    """Takes a URL, sends a HEAD request, returns the URL of final redirection.
-    Necessary for determining the canonical post URL from one of multiple
-    possible forms. Imitates Firefox user agent string, in order to ensure
-    access to sites.
+get_redirect = forum_archive.get_redirect
 
-    """
-    ro = urllib.request.Request(url, method='HEAD', headers={"User-Agent": "Mozilla/5.0 (X11; Ubuntu; Linux i686; rv:21.0) Gecko/20100101 Firefox/21.0"})
-    try:
-        r = urllib.request.urlopen(ro)
-    except:
-        print(url)
-        raise
-    return r.geturl()
+def get_postnum(url):
+    o = re.match(r"https?://[^/]+/posts/(\d+)", url)
+    if o:
+        return o.group(1)
+    o = re.match(r"https?://[^/]+/threads/[^/]+/.*?#post-(\d+)", url)
+    if o:
+        return o.group(1)
 
 def download_story(chapters):
     """Takes a list of chapters, returns a list of strings with chapter text.
@@ -33,9 +28,12 @@ def download_story(chapters):
     for i in chapters:
         while True:
             try:
-                n = [j['post_url'] for j in cthread].index(i[1])
+                if get_postnum(i[1]) is None:
+                    n = 0
+                else:
+                    n = [get_postnum(j['post_url']) for j in cthread].index(get_postnum(i[1]))
                 rlist.append((i[0], cthread[n]['text']))
-            except ValueError:
+            except (ValueError, IndexError):
                 if lerr == i[1]:
                     raise
                 print("Getting thread for URL {}".format(i[1]))
@@ -86,13 +84,14 @@ def compile_story(title, chapters, urls, outfile, headers=True, contents=False):
     outfile.write("""<html>
 <head>
 <meta charset="UTF-8">
-<title>{}</title>
+<meta name="Author" content="{author}" />
+<title>{title}</title>
 <style type="text/css">
 body {{ font-family: sans-serif }}
 </style>
 </head>
 <!--
-""".format(title[0]))
+""".format(title=title[0], author=title[1]))
     outfile.write("title: {}\n".format(title[0]))
     outfile.write("author: {}\n".format(title[1]))
     outfile.write("source: {}\n".format(title[2]))
@@ -179,8 +178,9 @@ def main():
         args.title, args.url, cli = read_file(args.url)
     if args.credential:
         c = args.credential.split(':', 1)
+        c = {'username': c[0], 'password': c[1]}
     else:
-        c = None
+        c = {}
     g = forum_archive.make_getter(args.url, c)
     if args.thread:
         fp = g.get_thread()

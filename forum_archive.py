@@ -17,10 +17,32 @@ import dateutil.parser, datetime, math, time
 import traceback, http.cookiejar, hashlib
 import json, gzip
 
+# import http.client
+# http.client.HTTPConnection.debuglevel = 1
+
+def get_redirect(url, opener=None):
+    """Takes a URL, sends a HEAD request, returns the URL of final redirection.
+    Necessary for determining the canonical post URL from one of multiple
+    possible forms. Imitates Firefox user agent string, in order to ensure
+    access to sites.
+
+    """
+    if opener is None:
+        ofunc = urllib.request.urlopen
+    else:
+        ofunc = opener.open
+    ro = urllib.request.Request(url, method='HEAD') #, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:34.0) Gecko/20100101 Firefox/34.0"})
+    try:
+        r = ofunc(ro)
+    except:
+        print(url)
+        raise
+    return r.geturl()
+
 def urlopen_retry(url, tries=3, delay=1, opener=None):
     """Open a URL, with retries on failure. Spoofs user agent to look like Firefox,
     due to various sites attempting to prohibit automatic downloading."""
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Ubuntu; Linux i686; rv:21.0) Gecko/20100101 Firefox/21.0"})
+    req = urllib.request.Request(url) #, headers={"User-Agent": "Mozilla/5.0 (X11; Ubuntu; Linux i686; rv:21.0) Gecko/20100101 Firefox/21.0"})
     if opener is None:
         ofunc = urllib.request.urlopen
     else:
@@ -40,7 +62,8 @@ class ThreadGetter:
     forum implemented."""
     def __init__(self, url, *args):
         self.url = url
-        self.opener = None
+        if not hasattr(self, 'opener'):
+            self.opener = None
     def get_thread(self, pages=None):
         """This method will download the thread (of the appropriate forum) which was
         passed to the object's constructor. URLs are not checked for
@@ -172,22 +195,27 @@ class XFGetter(ThreadGetter):
 
     """
     def __init__(self, url, cred={}, *args):
-        ThreadGetter.__init__(self, url)
-        o = re.match("(https?://)?([^/]+)/", url)
-        self.domain = o.group(2)
-        o = re.match(r"http://[^/]+/threads/[^.]+\.(\d+).*", self.url)
-        self.tid = o.group(1)
+        o = re.match("((?P<scheme>https?)://)?(?P<domain>[^/]+)/", url)
+        self.domain = o.group('domain')
+        self.scheme = o.group('scheme')
         cj = cred.get('cookies', http.cookiejar.CookieJar())
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
         if not 'cookies' in cred and 'username' in cred and 'password' in cred:
-            self.login(**cred)        
+            self.login(**cred)
         self.cred = cred
         self.cred['cookies'] = cj
+        url = get_redirect(url, opener=self.opener)
+        ThreadGetter.__init__(self, url)
+        o = re.match(r"https?://[^/]+/threads/[^.]+\.(\d+).*", self.url)
+        self.tid = o.group(1)
     def login(self, username, password, **args):
         ue = urllib.parse.urlencode
-        self.opener.open('http://{}/login/login'.format(self.domain),
-                         data=ue({'login': username, 'password': password, 'redirect': 'http://{}/'.format(self.domain),
-                                  'register': '0', 'remember': '1', 'cookie_check': '1', '_xfToken': ''}).encode())
+        req = urllib.request.Request('{}://{}/'.format(self.scheme, self.domain)) #, headers={"User-Agent": "Mozilla/5.0 (X11; Ubuntu; Linux i686; rv:21.0) Gecko/20100101 Firefox/21.0"})
+        self.opener.open(req)
+        req = urllib.request.Request('{}://{}/login/login'.format(self.scheme, self.domain)) #, headers={"User-Agent": "Mozilla/5.0 (X11; Ubuntu; Linux i686; rv:21.0) Gecko/20100101 Firefox/21.0"})
+        r = self.opener.open(req, data=ue({'login': username, 'password': password, 'redirect': '{}://{}/'.format(self.scheme, self.domain),
+                                           'register': '0', 'remember': '1', 'cookie_check': '1', '_xfToken': ''}).encode())
+        return r.read()
 #                         data="login={}&register=0&password={}&remember=1&cookie_check=1&_xfToken=&redirect=http%3A%2F%{}%2F".format(uq(username), uq(password), uq(self.domain)).encode())
     def get_posts(self, soup, url):
         rv = []
@@ -197,10 +225,10 @@ class XFGetter(ThreadGetter):
                 continue
             ul = i.find("a", class_="username")
             poster_name = str(ul.string)
-            poster_url = "http://{}/{}".format(self.domain, ul['href'])
+            poster_url = "{}://{}/{}".format(self.scheme, self.domain, ul['href'])
             text = str(i.find("blockquote", class_="messageText"))
             pl = i.find("a", title="Permalink")
-            post_url = "http://{}/{}".format(self.domain, pl['href'])
+            post_url = "{}://{}/{}".format(self.scheme, self.domain, pl['href'])
             try:
                 d = i.find(class_="DateTime")
                 if d.name == 'abbr':
@@ -225,12 +253,16 @@ class XFGetter(ThreadGetter):
     def make_page_url(self, page):
         if type(page) == int:
             page = "page-{}".format(page)
-        return "http://{}/threads/{}/{}".format(self.domain, self.tid, page)
+        return "{}://{}/threads/{}/{}".format(self.scheme, self.domain, self.tid, page)
     def get_url_page(self, url=None):
         if url is None:
             url = self.url
         o = re.match(r"https?://[^/]+/threads/[^/]+/?(page-(\d+))?", url)
-        r = o.group(2)
+        if o:
+            r = o.group(2)
+        else:
+            url = get_redirect(url, opener=self.opener)
+            return self.get_url_page(url)
         if r is None:
             return 1
         else:
